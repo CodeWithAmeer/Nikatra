@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Format check
+        shell: bash
+        run: |
+          test -z "$(gofmt -l ./cmd/nikatra)"
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build ./cmd/nikatra
+      - name: Self test
+        run: go run ./cmd/nikatra --self-test

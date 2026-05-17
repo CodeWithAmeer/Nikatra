@@ -1,0 +1,10 @@
+{
+  "target": "https://example.com",
+  "authorized": true,
+  "output_format": "html",
+  "output": "report.html",
+  "depth": 1,
+  "max_pages": 40,
+  "rate_limit": 3,
+  "respect_robots": true
+}

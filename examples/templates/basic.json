@@ -1,0 +1,26 @@
+[
+  {
+    "id": "example-security-txt",
+    "name": "security.txt visible",
+    "category": "Discovery",
+    "severity": "INFO",
+    "description": "A security.txt file is visible.",
+    "recommendation": "Keep security.txt current with monitored contact details.",
+    "paths": [
+      "/.well-known/security.txt",
+      "/security.txt"
+    ],
+    "method": "GET",
+    "status_codes": [
+      200
+    ],
+    "body_regex": [
+      "(?i)contact|expires|policy"
+    ],
+    "confidence": 80,
+    "tags": [
+      "policy",
+      "discovery"
+    ]
+  }
+]
