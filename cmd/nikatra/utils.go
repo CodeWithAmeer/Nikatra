@@ -152,6 +152,30 @@ func sensitiveLookingURL(raw string) bool {
 	return false
 }
 
+func normalizeScanProfile(raw string) (string, error) {
+	profile := strings.ToLower(strings.TrimSpace(raw))
+	if profile == "" {
+		profile = "basic"
+	}
+	switch profile {
+	case "basic", "standard", "full", "paranoid":
+		return profile, nil
+	default:
+		return "", fmt.Errorf("unsupported scan profile %q; use basic, standard, full, or paranoid", raw)
+	}
+}
+
+func filterPathChecksByMinimumSeverity(checks []PathCheck, min Severity) []PathCheck {
+	minRank := severityRank[min]
+	out := make([]PathCheck, 0, len(checks))
+	for _, check := range checks {
+		if severityRank[check.Severity] >= minRank {
+			out = append(out, check)
+		}
+	}
+	return out
+}
+
 func checkEnabled(cfg *Config, id string) bool {
 	id = strings.ToLower(id)
 	if len(cfg.IncludeChecks) > 0 && !cfg.IncludeChecks[id] {
@@ -749,6 +773,61 @@ func firstMatch(s string, markers []string) string {
 	return ""
 }
 
+func sanitizeEvidence(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	privateKeyRe := regexp.MustCompile(`(?is)-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----`)
+	s = privateKeyRe.ReplaceAllString(s, "<private-key:redacted>")
+	privateKeyMarkerRe := regexp.MustCompile(`(?i)-----BEGIN (?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY-----`)
+	s = privateKeyMarkerRe.ReplaceAllString(s, "<private-key-marker:redacted>")
+	bearerRe := regexp.MustCompile(`(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{8,})`)
+	s = bearerRe.ReplaceAllStringFunc(s, func(m string) string {
+		parts := strings.Fields(m)
+		if len(parts) < 2 {
+			return "Bearer <redacted>"
+		}
+		return "Bearer <redacted:" + redactionHash(parts[1]) + ">"
+	})
+	basicRe := regexp.MustCompile(`(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}`)
+	s = basicRe.ReplaceAllString(s, "Basic <redacted>")
+	jwtRe := regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
+	s = jwtRe.ReplaceAllStringFunc(s, func(m string) string { return "<jwt:redacted:" + redactionHash(m) + ">" })
+	awsRe := regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)
+	s = awsRe.ReplaceAllStringFunc(s, func(m string) string { return "<aws-access-key-id:redacted:" + redactionHash(m) + ">" })
+	urlParamRe := regexp.MustCompile(`(?i)([?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|passwd|secret|client[_-]?secret|signature|sig)=)([^&#\s]+)`)
+	s = urlParamRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := urlParamRe.FindStringSubmatch(m)
+		if len(sub) < 3 {
+			return m
+		}
+		return sub[1] + "<redacted:" + redactionHash(sub[2]) + ">"
+	})
+	kvRe := regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|token|password|passwd|private[_-]?key|aws_access_key_id|aws_secret_access_key|client_secret|app_key|secret_key|jwt_secret|db_password|database_url|authorization|cookie)\b\s*([:=])\s*["']?([^"'\s;,]{6,})["']?`)
+	s = kvRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := kvRe.FindStringSubmatch(m)
+		if len(sub) < 4 {
+			return m
+		}
+		return sub[1] + sub[2] + "<redacted:" + redactionHash(sub[3]) + ">"
+	})
+	return s
+}
+
+func redactionHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:10]
+}
+
+func sanitizeStringSlice(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		out = append(out, sanitizeEvidence(v))
+	}
+	return out
+}
+
 func findSecretLikeString(text string) string {
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(api[_-]?key|secret|token|password|passwd|private[_-]?key|aws_access_key_id|aws_secret_access_key)\s*[:=]\s*["']?[^"'\s]{8,}`),
@@ -757,7 +836,7 @@ func findSecretLikeString(text string) string {
 	}
 	for _, re := range patterns {
 		if m := re.FindString(text); m != "" {
-			return truncateString(m, 180)
+			return truncateString(sanitizeEvidence(m), 180)
 		}
 	}
 	return ""
@@ -907,6 +986,8 @@ type NikatraJSONConfig struct {
 	FollowSitemap *bool           `json:"follow_sitemap"`
 	FollowRobots  *bool           `json:"follow_robots"`
 	RespectRobots *bool           `json:"respect_robots"`
+	SafeMode      *bool           `json:"safe_mode"`
+	ScanProfile   string          `json:"scan_profile"`
 	Verbose       *bool           `json:"verbose"`
 	Headers       json.RawMessage `json:"headers"`
 	Include       []string        `json:"include"`
@@ -980,11 +1061,19 @@ func (p *RobotsPolicy) Allowed(path string) bool {
 	return bestDisallow < 0 || bestAllow >= bestDisallow
 }
 
-func (cfg *Config) IsCrawlBlocked(u *url.URL) bool {
+func (cfg *Config) IsRobotsBlocked(u *url.URL) bool {
 	if cfg == nil || !cfg.RespectRobots || cfg.RobotsPolicy == nil || u == nil {
 		return false
 	}
-	return !cfg.RobotsPolicy.Allowed(u.EscapedPath())
+	path := u.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	return !cfg.RobotsPolicy.Allowed(path)
+}
+
+func (cfg *Config) IsCrawlBlocked(u *url.URL) bool {
+	return cfg.IsRobotsBlocked(u)
 }
 
 func (p *Soft404Profile) Decision(resp *ResponseData) (bool, int, string) {

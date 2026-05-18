@@ -4,8 +4,8 @@ import (
 	"net/http"
 )
 
-func BuildPathChecks() []PathCheck {
-	checks := []PathCheck{
+func CorePathChecks() []PathCheck {
+	return []PathCheck{
 		{ID: "git-dir", Name: "Public .git directory indicator", Category: "Information Disclosure", Severity: SeverityHigh, Description: "The site appears to expose Git repository metadata.", Recommendation: "Remove .git from the web root and block dot-directories at the web server.", Paths: []string{"/.git/"}, Method: http.MethodGet, Confidence: 85, Tags: []string{"git", "exposure"}, Confirm: confirmGitDirectory},
 		{ID: "git-config", Name: "Public .git/config exposed", Category: "Information Disclosure", Severity: SeverityHigh, Description: "A Git config file appears publicly readable.", Recommendation: "Remove .git from the web root and rotate credentials that may have been committed.", Paths: []string{"/.git/config"}, Method: http.MethodGet, Confidence: 95, Tags: []string{"git", "config", "exposure"}, Confirm: confirmGitConfig},
 		{ID: "env-file", Name: ".env file exposed", Category: "Information Disclosure", Severity: SeverityCritical, Description: "An environment file appears publicly readable and may contain secrets.", Recommendation: "Remove .env files from the web root, block dotfiles, and rotate any exposed secrets.", Paths: []string{"/.env", "/.env.local", "/.env.production", "/.env.development", "/.env.backup"}, Method: http.MethodGet, Confidence: 95, Tags: []string{"env", "secrets"}, Confirm: confirmEnvFile},
@@ -29,7 +29,28 @@ func BuildPathChecks() []PathCheck {
 		{ID: "crossdomain-policy", Name: "Legacy cross-domain policy exposed", Category: "Security Policy", Severity: SeverityLow, Description: "A Flash/Silverlight cross-domain policy file is publicly accessible.", Recommendation: "Remove legacy policy files or restrict them to trusted domains only.", Paths: []string{"/crossdomain.xml", "/clientaccesspolicy.xml"}, Method: http.MethodGet, Confidence: 75, Tags: []string{"policy"}, Confirm: confirmCrossDomainPolicy},
 	}
 
-	checks = append(checks, ExpandedPathChecks()...)
-	checks = append(checks, ExtendedPathChecksForLargeAuditCoverage()...)
-	return checks
+}
+
+func BuildPathChecks() []PathCheck {
+	return BuildPathChecksForProfile("full")
+}
+
+func BuildPathChecksForProfile(profile string) []PathCheck {
+	normalized, err := normalizeScanProfile(profile)
+	if err != nil {
+		normalized = "basic"
+	}
+	checks := CorePathChecks()
+	switch normalized {
+	case "basic":
+		return checks
+	case "standard":
+		return append(checks, filterPathChecksByMinimumSeverity(ExpandedPathChecks(), SeverityHigh)...)
+	case "full", "paranoid":
+		checks = append(checks, ExpandedPathChecks()...)
+		checks = append(checks, ExtendedPathChecksForLargeAuditCoverage()...)
+		return checks
+	default:
+		return checks
+	}
 }

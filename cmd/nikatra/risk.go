@@ -10,6 +10,7 @@ import (
 
 func NewFinding(checkID, name, category string, severity Severity, confidence int, u, method string, status int, evidence, description, recommendation string) Finding {
 	confidence = clampInt(confidence, 1, 100)
+	evidence = sanitizeEvidence(evidence)
 	f := Finding{
 		CheckID:        strings.ToLower(checkID),
 		Name:           name,

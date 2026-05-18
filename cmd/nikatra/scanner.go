@@ -21,6 +21,7 @@ func BuildReportConfig(cfg *Config) ReportConfig {
 		UserAgent:           cfg.UserAgent,
 		OutputFormat:        cfg.OutputFormat,
 		SafeMode:            cfg.SafeMode,
+		ScanProfile:         cfg.ScanProfile,
 		MaxRedirects:        cfg.MaxRedirects,
 		RateLimit:           cfg.RateLimit,
 		ScanDepth:           cfg.ScanDepth,

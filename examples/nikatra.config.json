@@ -3,6 +3,8 @@
   "authorized": true,
   "output_format": "html",
   "output": "report.html",
+  "scan_profile": "basic",
+  "safe_mode": true,
   "depth": 1,
   "max_pages": 40,
   "rate_limit": 3,

@@ -52,6 +52,7 @@ type Config struct {
 	OutputFormat       string
 	OutputPath         string
 	SafeMode           bool
+	ScanProfile        string
 	MaxRedirects       int
 	RateLimit          float64
 	CustomHeaders      []HeaderKV
@@ -222,6 +223,7 @@ type ReportConfig struct {
 	UserAgent           string   `json:"user_agent"`
 	OutputFormat        string   `json:"output_format"`
 	SafeMode            bool     `json:"safe_mode"`
+	ScanProfile         string   `json:"scan_profile"`
 	MaxRedirects        int      `json:"max_redirects"`
 	RateLimit           float64  `json:"rate_limit_requests_per_second"`
 	ScanDepth           int      `json:"scan_depth"`

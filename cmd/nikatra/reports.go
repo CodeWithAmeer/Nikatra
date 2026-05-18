@@ -50,6 +50,10 @@ func ApplyBaseline(path string, findings []Finding) BaselineComparison {
 	}
 	for key, old := range prev {
 		if !curr[key] {
+			old.Evidence = sanitizeEvidence(old.Evidence)
+			for i := range old.EvidenceItems {
+				old.EvidenceItems[i].Value = sanitizeEvidence(old.EvidenceItems[i].Value)
+			}
 			old.BaselineStatus = "resolved"
 			comparison.Resolved++
 			comparison.ResolvedFindings = append(comparison.ResolvedFindings, old)

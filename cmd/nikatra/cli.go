@@ -140,6 +140,7 @@ func defaultConfig() *Config {
 		UserAgent:          "Nikatra/1.0 Defensive Scanner (+authorized audit)",
 		OutputFormat:       "text",
 		SafeMode:           true,
+		ScanProfile:        "basic",
 		MaxRedirects:       5,
 		RateLimit:          5.0,
 		ScanDepth:          1,
@@ -179,7 +180,9 @@ func parseConfig(args []string) (*Config, error) {
 	fs.StringVar(&cfg.OutputFormat, "format", cfg.OutputFormat, "output format: text, json, html, markdown, sarif")
 	fs.StringVar(&cfg.OutputFormat, "output-format", cfg.OutputFormat, "output format: text, json, html, markdown, sarif")
 	fs.StringVar(&cfg.OutputPath, "output", cfg.OutputPath, "output file path")
-	fs.BoolVar(&cfg.SafeMode, "safe-mode", cfg.SafeMode, "safe mode; only observational checks and safe HTTP methods")
+	fs.BoolVar(&cfg.SafeMode, "safe-mode", cfg.SafeMode, "safe mode; cap high-noise settings and keep requests conservative; disabling does not enable unsafe methods")
+	fs.StringVar(&cfg.ScanProfile, "scan-profile", cfg.ScanProfile, "path-check profile: basic, standard, full, paranoid")
+	fs.StringVar(&cfg.ScanProfile, "profile", cfg.ScanProfile, "alias for --scan-profile")
 	fs.IntVar(&cfg.MaxRedirects, "max-redirects", cfg.MaxRedirects, "maximum redirects to follow")
 	fs.Float64Var(&cfg.RateLimit, "rate-limit", cfg.RateLimit, "maximum requests per second; 0 disables rate limiting")
 	fs.Var(&headers, "H", "custom header in Name: value format; may be repeated")
@@ -213,6 +216,11 @@ func parseConfig(args []string) (*Config, error) {
 	cfg.Timeout = timeout.value
 	cfg.CustomHeaders = headers
 	cfg.OutputFormat = strings.ToLower(strings.TrimSpace(cfg.OutputFormat))
+	profile, err := normalizeScanProfile(cfg.ScanProfile)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ScanProfile = profile
 	if cfg.OutputFormat == "md" {
 		cfg.OutputFormat = "markdown"
 	}
@@ -238,6 +246,17 @@ func parseConfig(args []string) (*Config, error) {
 		cfg.FailOnSet = true
 	}
 	cfg.Concurrency = clampInt(cfg.Concurrency, 1, 128)
+	if cfg.SafeMode {
+		if cfg.Concurrency > 32 {
+			cfg.Concurrency = 32
+		}
+		if cfg.MaxPages > 250 {
+			cfg.MaxPages = 250
+		}
+		if cfg.RateLimit <= 0 || cfg.RateLimit > 10 {
+			cfg.RateLimit = 10
+		}
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 10 * time.Second
 	}

@@ -72,6 +72,12 @@ func LoadConfigFile(path string, cfg *Config) error {
 	if jc.RespectRobots != nil {
 		cfg.RespectRobots = *jc.RespectRobots
 	}
+	if jc.SafeMode != nil {
+		cfg.SafeMode = *jc.SafeMode
+	}
+	if jc.ScanProfile != "" {
+		cfg.ScanProfile = jc.ScanProfile
+	}
 	if jc.Verbose != nil {
 		cfg.Verbose = *jc.Verbose
 	}

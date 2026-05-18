@@ -125,6 +125,9 @@ func NewEngine(cfg *Config, base *url.URL) *Engine {
 			if !cfg.AllowExternal && base != nil && !sameHost(req.URL, base) {
 				return http.ErrUseLastResponse
 			}
+			if base != nil && !sameHost(req.URL, base) {
+				stripSensitiveRequestHeaders(req, cfg)
+			}
 			return nil
 		},
 	}
@@ -235,17 +238,33 @@ func (e *Engine) applyHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", e.cfg.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml,application/json,text/plain,application/javascript,text/javascript,*/*;q=0.8")
 	req.Header.Set("Accept-Encoding", "identity")
-	for _, kv := range e.cfg.CustomHeaders {
-		req.Header.Set(kv.Name, kv.Value)
+	sameOrigin := e.base == nil || sameHost(req.URL, e.base)
+	if sameOrigin {
+		for _, kv := range e.cfg.CustomHeaders {
+			req.Header.Set(kv.Name, kv.Value)
+		}
+		if e.cfg.Cookie != "" && req.Header.Get("Cookie") == "" {
+			req.Header.Set("Cookie", e.cfg.Cookie)
+		}
+		if e.cfg.BearerToken != "" && req.Header.Get("Authorization") == "" {
+			req.Header.Set("Authorization", "Bearer "+e.cfg.BearerToken)
+		}
+		if e.cfg.BasicAuthUser != "" || e.cfg.BasicAuthPass != "" {
+			req.SetBasicAuth(e.cfg.BasicAuthUser, e.cfg.BasicAuthPass)
+		}
+	} else {
+		stripSensitiveRequestHeaders(req, e.cfg)
 	}
-	if e.cfg.Cookie != "" && req.Header.Get("Cookie") == "" {
-		req.Header.Set("Cookie", e.cfg.Cookie)
+}
+
+func stripSensitiveRequestHeaders(req *http.Request, cfg *Config) {
+	if req == nil {
+		return
 	}
-	if e.cfg.BearerToken != "" && req.Header.Get("Authorization") == "" {
-		req.Header.Set("Authorization", "Bearer "+e.cfg.BearerToken)
-	}
-	if e.cfg.BasicAuthUser != "" || e.cfg.BasicAuthPass != "" {
-		req.SetBasicAuth(e.cfg.BasicAuthUser, e.cfg.BasicAuthPass)
+	req.Header.Del("Authorization")
+	req.Header.Del("Cookie")
+	for _, kv := range cfg.CustomHeaders {
+		req.Header.Del(kv.Name)
 	}
 }
 
@@ -275,6 +294,9 @@ func RunScan(ctx context.Context, cfg *Config) (*Report, error) {
 	engine := NewEngine(cfg, baseURL)
 	defer engine.Close()
 	verbosef(cfg, "normalized target: %s", baseURL.String())
+	if cfg.RespectRobots {
+		cfg.RobotsPolicy = LoadRobotsPolicy(ctx, engine, baseURL, cfg)
+	}
 	var findings []Finding
 	tlsSummary, tlsFindings := CheckTLS(ctx, cfg, baseURL)
 	findings = append(findings, tlsFindings...)
@@ -287,17 +309,20 @@ func RunScan(ctx context.Context, cfg *Config) (*Report, error) {
 		findings = append(findings, NewFinding("missing-http-to-https-redirect", "HTTP does not clearly redirect to HTTPS", "TLS", SeverityLow, 70, "http://"+baseURL.Host+"/", "HEAD", 0, "No same-host HTTP 3xx redirect to https:// was observed.", "The HTTP endpoint did not clearly redirect to HTTPS during the safe redirect check.", "Configure the HTTP virtual host or proxy to redirect all traffic to HTTPS."))
 	}
 	root := RootURL(baseURL)
-	rootResp, rootErr := engine.Fetch(ctx, http.MethodGet, root)
-	if rootErr != nil {
-		findings = append(findings, NewFinding("target-request-failed", "Target request failed", "Connectivity", SeverityMedium, 90, root.String(), http.MethodGet, 0, truncateString(rootErr.Error(), 240), "Nikatra could not retrieve the target root page.", "Verify the target URL, network path, TLS configuration, and authorization scope before scanning again."))
+	var rootResp *ResponseData
+	var rootErr error
+	if cfg.IsRobotsBlocked(root) {
+		verbosef(cfg, "robots blocked root request: %s", root.String())
+	} else {
+		rootResp, rootErr = engine.Fetch(ctx, http.MethodGet, root)
+		if rootErr != nil {
+			findings = append(findings, NewFinding("target-request-failed", "Target request failed", "Connectivity", SeverityMedium, 90, root.String(), http.MethodGet, 0, truncateString(rootErr.Error(), 240), "Nikatra could not retrieve the target root page.", "Verify the target URL, network path, TLS configuration, and authorization scope before scanning again."))
+		}
 	}
 	var securityHeaderSummary map[string]HeaderState
 	var crawlRes CrawlResult
 	var technologies []Technology
 	if rootResp != nil {
-		if cfg.RespectRobots {
-			cfg.RobotsPolicy = LoadRobotsPolicy(ctx, engine, baseURL, cfg)
-		}
 		headerFindings, summary := AnalyzeSecurityHeaders(rootResp, baseURL)
 		securityHeaderSummary = summary
 		findings = append(findings, headerFindings...)
@@ -332,10 +357,10 @@ func RunScan(ctx context.Context, cfg *Config) (*Report, error) {
 		Findings:                findings,
 		Risk:                    risk,
 		TopReasons:              risk.TopReasons,
-		CrawledURLs:             crawlRes.PageURLs,
-		DiscoveredJSReferences:  crawlRes.JSRefs,
-		DiscoveredCSSReferences: crawlRes.CSSRefs,
-		DiscoveredEndpoints:     crawlRes.Endpoints,
+		CrawledURLs:             sanitizeStringSlice(crawlRes.PageURLs),
+		DiscoveredJSReferences:  sanitizeStringSlice(crawlRes.JSRefs),
+		DiscoveredCSSReferences: sanitizeStringSlice(crawlRes.CSSRefs),
+		DiscoveredEndpoints:     sanitizeStringSlice(crawlRes.Endpoints),
 		HTTPStats:               engine.stats.Snapshot(),
 		TLS:                     tlsSummary,
 		SecurityHeadersSummary:  securityHeaderSummary,
@@ -349,6 +374,9 @@ func CalibrateSoft404(ctx context.Context, engine *Engine, base *url.URL) *Soft4
 		token := randomToken(8)
 		paths := []string{"/nikatra-not-found-check-" + token, "/" + token + "/definitely-not-present", "/assets/" + token + ".txt", "/api/" + token}
 		u := BuildURL(base, paths[i%len(paths)])
+		if engine.cfg.IsRobotsBlocked(u) {
+			continue
+		}
 		resp, err := engine.Fetch(ctx, http.MethodGet, u)
 		if err != nil || resp == nil {
 			continue
@@ -489,7 +517,7 @@ func FetchJSDiscoveries(ctx context.Context, engine *Engine, base *url.URL, cfg 
 	maxJS := minInt(len(jsRefs), 30)
 	for i := 0; i < maxJS; i++ {
 		u, err := url.Parse(jsRefs[i])
-		if err != nil || (!cfg.AllowExternal && !sameHost(u, base)) {
+		if err != nil || (!cfg.AllowExternal && !sameHost(u, base)) || cfg.IsRobotsBlocked(u) {
 			continue
 		}
 		resp, err := engine.Fetch(ctx, http.MethodGet, u)
@@ -577,7 +605,7 @@ func DiscoverFromSitemap(ctx context.Context, engine *Engine, base *url.URL, cfg
 }
 
 func RunPathChecks(ctx context.Context, engine *Engine, base *url.URL, cfg *Config, soft404 *Soft404Profile) []Finding {
-	checks := BuildPathChecks()
+	checks := BuildPathChecksForProfile(cfg.ScanProfile)
 	external, err := LoadTemplateChecks(cfg.TemplatesPath)
 	if err != nil {
 		verbosef(cfg, "template load warning: %v", err)
@@ -605,11 +633,16 @@ func RunPathChecks(ctx context.Context, engine *Engine, base *url.URL, cfg *Conf
 		}
 		check.Method = method
 		for _, p := range check.Paths {
+			u := BuildURL(base, p)
+			if cfg.IsRobotsBlocked(u) {
+				verbosef(cfg, "robots blocked path check: %s", u.String())
+				continue
+			}
 			tasks = append(tasks, struct {
 				Check PathCheck
 				URL   *url.URL
 				Path  string
-			}{check, BuildURL(base, p), p})
+			}{check, u, p})
 		}
 	}
 	if len(tasks) == 0 {
@@ -672,7 +705,7 @@ func AnalyzeDiscoveredAssets(ctx context.Context, engine *Engine, base *url.URL,
 	var findings []Finding
 	for _, sm := range crawl.SourceMaps {
 		u, err := url.Parse(sm)
-		if err != nil || (!cfg.AllowExternal && !sameHost(u, base)) {
+		if err != nil || (!cfg.AllowExternal && !sameHost(u, base)) || cfg.IsRobotsBlocked(u) {
 			continue
 		}
 		resp, err := engine.Fetch(ctx, http.MethodGet, u)

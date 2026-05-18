@@ -18,7 +18,7 @@ func Fingerprint(root *ResponseData, pages []PageData) []Technology {
 		key := strings.ToLower(name)
 		existing, ok := t[key]
 		if !ok || confidence > existing.Confidence || (existing.Version == "" && version != "") {
-			t[key] = Technology{Name: name, Version: version, Evidence: truncateString(evidence, 220), Confidence: clampInt(confidence, 1, 100)}
+			t[key] = Technology{Name: name, Version: version, Evidence: truncateString(sanitizeEvidence(evidence), 220), Confidence: clampInt(confidence, 1, 100)}
 		}
 	}
 	if root != nil {
@@ -133,7 +133,7 @@ func EnhanceFingerprinting(in []Technology, root *ResponseData, pages []PageData
 	add := func(name, version, evidence string, confidence int) {
 		key := strings.ToLower(name)
 		if old, ok := m[key]; !ok || confidence > old.Confidence || (old.Version == "" && version != "") {
-			m[key] = Technology{Name: name, Version: version, Evidence: truncateString(evidence, 220), Confidence: clampInt(confidence, 1, 100)}
+			m[key] = Technology{Name: name, Version: version, Evidence: truncateString(sanitizeEvidence(evidence), 220), Confidence: clampInt(confidence, 1, 100)}
 		}
 	}
 	if root != nil {
